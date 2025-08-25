@@ -1,0 +1,557 @@
+#!/usr/bin/env python3
+"""
+Explain Like I'm a Reviewer - Academic Writing Style Adapter
+AI-powered tool that rewrites research abstracts/papers in the style of specific 
+journal reviewers or grant evaluators using Gemini API.
+"""
+
+import os
+import json
+import re
+import requests
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime
+import argparse
+import sys
+
+# Install required packages: pip install requests
+
+@dataclass
+class ReviewerProfile:
+    """Represents a specific reviewer or journal style"""
+    name: str
+    journal: str
+    style_description: str
+    writing_characteristics: List[str]
+    preferred_structure: str
+    key_phrases: List[str]
+    tone: str
+    technical_level: str
+
+@dataclass
+class RewriteResult:
+    """Result of abstract rewriting"""
+    original_abstract: str
+    rewritten_abstract: str
+    reviewer_style: str
+    word_count_original: int
+    word_count_rewritten: int
+    key_changes: List[str]
+    confidence_score: float
+
+class ReviewerStyleDatabase:
+    """Database of reviewer styles and preferences"""
+    
+    def __init__(self):
+        self.reviewer_profiles = {
+            'nature_reviewer': ReviewerProfile(
+                name="Nature Journal Reviewer",
+                journal="Nature",
+                style_description="High-impact, broad significance emphasis, concise but impactful",
+                writing_characteristics=[
+                    "Emphasizes broad significance and impact",
+                    "Uses strong, decisive language",
+                    "Highlights novelty and breakthrough aspects",
+                    "Concise but compelling narrative",
+                    "Global implications mentioned"
+                ],
+                preferred_structure="Impact → Method → Key Finding → Broader Significance",
+                key_phrases=[
+                    "groundbreaking", "paradigm-shifting", "unprecedented", 
+                    "fundamental insights", "transformative potential",
+                    "global implications", "remarkable", "striking"
+                ],
+                tone="Confident, impactful, authoritative",
+                technical_level="High but accessible to broad scientific audience"
+            ),
+            
+            'science_reviewer': ReviewerProfile(
+                name="Science Journal Reviewer",
+                journal="Science",
+                style_description="Innovation-focused, interdisciplinary appeal, clear methodology",
+                writing_characteristics=[
+                    "Strong methodological innovation emphasis",
+                    "Interdisciplinary connections highlighted",
+                    "Clear cause-and-effect relationships",
+                    "Technology and application focus",
+                    "Future research directions mentioned"
+                ],
+                preferred_structure="Innovation → Method → Results → Applications → Future",
+                key_phrases=[
+                    "innovative approach", "cutting-edge", "novel methodology",
+                    "interdisciplinary", "technological advance", "breakthrough technology",
+                    "practical applications", "future directions"
+                ],
+                tone="Innovative, forward-thinking, methodologically rigorous",
+                technical_level="Technical but emphasizes broader applications"
+            ),
+            
+            'cell_reviewer': ReviewerProfile(
+                name="Cell Journal Reviewer",
+                journal="Cell",
+                style_description="Mechanistic focus, molecular detail, biological significance",
+                writing_characteristics=[
+                    "Detailed molecular mechanisms",
+                    "Biological pathway emphasis",
+                    "Disease relevance highlighted",
+                    "Evolutionary or developmental context",
+                    "Therapeutic implications"
+                ],
+                preferred_structure="Background → Mechanism → Function → Disease Relevance",
+                key_phrases=[
+                    "molecular mechanism", "cellular pathway", "biological function",
+                    "disease pathogenesis", "therapeutic target", "evolutionary conservation",
+                    "physiological relevance", "molecular basis"
+                ],
+                tone="Mechanistically precise, biologically grounded",
+                technical_level="High technical detail with biological context"
+            ),
+            
+            'plos_one_reviewer': ReviewerProfile(
+                name="PLOS ONE Reviewer",
+                journal="PLOS ONE",
+                style_description="Methodological rigor, reproducibility, open science",
+                writing_characteristics=[
+                    "Strong emphasis on methodology",
+                    "Reproducibility and transparency",
+                    "Statistical rigor highlighted",
+                    "Open data and methods",
+                    "Broader accessibility"
+                ],
+                preferred_structure="Objective → Method → Results → Implications → Reproducibility",
+                key_phrases=[
+                    "rigorous methodology", "reproducible results", "transparent analysis",
+                    "open data", "statistical significance", "methodological advancement",
+                    "robust findings", "comprehensive analysis"
+                ],
+                tone="Methodologically rigorous, transparent, accessible",
+                technical_level="Moderate with emphasis on clarity and reproducibility"
+            ),
+            
+            'nih_reviewer': ReviewerProfile(
+                name="NIH Grant Reviewer",
+                journal="NIH Grant Panel",
+                style_description="Clinical relevance, public health impact, feasibility",
+                writing_characteristics=[
+                    "Strong clinical/translational focus",
+                    "Public health impact emphasized",
+                    "Feasibility and timeline realistic",
+                    "Preliminary data strength",
+                    "Team expertise highlighted"
+                ],
+                preferred_structure="Health Problem → Approach → Expected Impact → Feasibility",
+                key_phrases=[
+                    "clinical significance", "public health impact", "translational potential",
+                    "patient outcomes", "health disparities", "feasible approach",
+                    "strong preliminary data", "experienced team"
+                ],
+                tone="Mission-driven, impact-focused, feasibility-conscious",
+                technical_level="Technical but with clear clinical relevance"
+            ),
+            
+            'nsf_reviewer': ReviewerProfile(
+                name="NSF Grant Reviewer",
+                journal="NSF Grant Panel",
+                style_description="Fundamental science, education impact, broader impacts",
+                writing_characteristics=[
+                    "Fundamental scientific questions",
+                    "Educational and training components",
+                    "Broader societal impacts",
+                    "Interdisciplinary collaboration",
+                    "Long-term scientific value"
+                ],
+                preferred_structure="Scientific Merit → Broader Impacts → Methods → Expected Outcomes",
+                key_phrases=[
+                    "fundamental questions", "scientific merit", "broader impacts",
+                    "educational outreach", "societal benefit", "interdisciplinary collaboration",
+                    "long-term significance", "transformative research"
+                ],
+                tone="Academically rigorous, education-conscious, society-focused",
+                technical_level="High scientific rigor with broader impact emphasis"
+            ),
+            
+            'jama_reviewer': ReviewerProfile(
+                name="JAMA Reviewer",
+                journal="JAMA",
+                style_description="Clinical evidence, patient care, medical practice impact",
+                writing_characteristics=[
+                    "Strong clinical evidence base",
+                    "Patient-centered outcomes",
+                    "Medical practice implications",
+                    "Evidence-based recommendations",
+                    "Healthcare policy relevance"
+                ],
+                preferred_structure="Clinical Problem → Evidence → Outcomes → Practice Implications",
+                key_phrases=[
+                    "clinical evidence", "patient outcomes", "medical practice",
+                    "healthcare delivery", "evidence-based", "clinical guidelines",
+                    "patient safety", "quality of care"
+                ],
+                tone="Evidence-based, clinically focused, patient-centered",
+                technical_level="Clinical focus with statistical rigor"
+            ),
+            
+            'venture_capital_reviewer': ReviewerProfile(
+                name="Venture Capital Reviewer",
+                journal="VC Investment Committee",
+                style_description="Market potential, scalability, competitive advantage",
+                writing_characteristics=[
+                    "Market size and opportunity",
+                    "Scalability potential",
+                    "Competitive advantage",
+                    "Revenue model clarity",
+                    "Team execution capability"
+                ],
+                preferred_structure="Market Opportunity → Solution → Advantage → Scalability → Returns",
+                key_phrases=[
+                    "market opportunity", "scalable solution", "competitive advantage",
+                    "revenue potential", "market disruption", "first-mover advantage",
+                    "addressable market", "monetization strategy"
+                ],
+                tone="Business-focused, opportunity-driven, ROI-conscious",
+                technical_level="Technology explained for business impact"
+            )
+        }
+    
+    def get_reviewer_profile(self, reviewer_type: str) -> Optional[ReviewerProfile]:
+        """Get reviewer profile by type"""
+        return self.reviewer_profiles.get(reviewer_type.lower())
+    
+    def list_available_reviewers(self) -> List[str]:
+        """List all available reviewer types"""
+        return list(self.reviewer_profiles.keys())
+    
+    def get_reviewer_descriptions(self) -> Dict[str, str]:
+        """Get descriptions of all reviewer types"""
+        return {
+            key: f"{profile.name} - {profile.style_description}"
+            for key, profile in self.reviewer_profiles.items()
+        }
+
+class GeminiRewriter:
+    """Gemini API interface for abstract rewriting"""
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+    
+    def rewrite_abstract(self, abstract: str, reviewer_profile: ReviewerProfile, 
+                        target_word_count: int = None) -> RewriteResult:
+        """Rewrite abstract in specific reviewer style"""
+        
+        word_count_constraint = f"Target word count: {target_word_count} words. " if target_word_count else ""
+        
+        prompt = f"""
+        You are an expert academic writer tasked with rewriting a research abstract in the specific style of a {reviewer_profile.name}.
+
+        REVIEWER PROFILE:
+        - Journal/Context: {reviewer_profile.journal}
+        - Style: {reviewer_profile.style_description}
+        - Tone: {reviewer_profile.tone}
+        - Technical Level: {reviewer_profile.technical_level}
+        - Preferred Structure: {reviewer_profile.preferred_structure}
+        
+        WRITING CHARACTERISTICS TO ADOPT:
+        {chr(10).join('- ' + char for char in reviewer_profile.writing_characteristics)}
+        
+        KEY PHRASES TO INCORPORATE (use naturally):
+        {', '.join(reviewer_profile.key_phrases)}
+        
+        ORIGINAL ABSTRACT:
+        {abstract}
+        
+        TASK:
+        Rewrite this abstract to appeal specifically to this type of reviewer. {word_count_constraint}
+        
+        REQUIREMENTS:
+        1. Maintain all factual content and scientific accuracy
+        2. Adopt the reviewer's preferred structure and emphasis
+        3. Use language and tone that resonates with this reviewer type
+        4. Incorporate key phrases naturally (don't force them)
+        5. Highlight aspects most important to this reviewer
+        6. Keep the core scientific contribution intact
+        
+        RESPONSE FORMAT:
+        REWRITTEN_ABSTRACT:
+        [Your rewritten abstract here]
+        
+        KEY_CHANGES:
+        - [List 3-5 major changes you made and why]
+        
+        CONFIDENCE:
+        [0.1-1.0 confidence score for how well this matches the reviewer style]
+        """
+        
+        try:
+            response = requests.post(
+                f"{self.base_url}?key={self.api_key}",
+                json={
+                    "contents": [{
+                        "parts": [{"text": prompt}]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.7,
+                        "maxOutputTokens": 2048
+                    }
+                },
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                raise Exception(f"API Error: {response.status_code} - {response.text}")
+            
+            data = response.json()
+            text = data['candidates'][0]['content']['parts'][0]['text']
+            
+            return self._parse_gemini_response(text, abstract, reviewer_profile.name)
+            
+        except Exception as e:
+            raise Exception(f"Gemini API error: {e}")
+    
+    def _parse_gemini_response(self, text: str, original_abstract: str, 
+                             reviewer_style: str) -> RewriteResult:
+        """Parse Gemini response into RewriteResult"""
+        
+        # Extract rewritten abstract
+        rewritten_match = re.search(r'REWRITTEN_ABSTRACT:\s*(.+?)(?=KEY_CHANGES:|CONFIDENCE:|$)', 
+                                  text, re.DOTALL | re.IGNORECASE)
+        rewritten_abstract = rewritten_match.group(1).strip() if rewritten_match else text.split('\n\n')[0]
+        
+        # Extract key changes
+        changes_match = re.search(r'KEY_CHANGES:\s*(.+?)(?=CONFIDENCE:|$)', 
+                                text, re.DOTALL | re.IGNORECASE)
+        if changes_match:
+            changes_text = changes_match.group(1).strip()
+            key_changes = [change.strip('- ').strip() for change in changes_text.split('\n') 
+                          if change.strip() and change.strip().startswith('-')]
+        else:
+            key_changes = ["Style adapted for target reviewer"]
+        
+        # Extract confidence
+        confidence_match = re.search(r'CONFIDENCE:\s*([\d.]+)', text, re.IGNORECASE)
+        confidence = float(confidence_match.group(1)) if confidence_match else 0.8
+        
+        return RewriteResult(
+            original_abstract=original_abstract,
+            rewritten_abstract=rewritten_abstract,
+            reviewer_style=reviewer_style,
+            word_count_original=len(original_abstract.split()),
+            word_count_rewritten=len(rewritten_abstract.split()),
+            key_changes=key_changes,
+            confidence_score=confidence
+        )
+
+class AbstractRewriter:
+    """Main abstract rewriting application"""
+    
+    def __init__(self, gemini_api_key: str):
+        self.gemini = GeminiRewriter(gemini_api_key)
+        self.reviewer_db = ReviewerStyleDatabase()
+    
+    def rewrite_for_reviewer(self, abstract: str, reviewer_type: str, 
+                           target_word_count: int = None) -> RewriteResult:
+        """Rewrite abstract for specific reviewer type"""
+        
+        reviewer_profile = self.reviewer_db.get_reviewer_profile(reviewer_type)
+        if not reviewer_profile:
+            available = ', '.join(self.reviewer_db.list_available_reviewers())
+            raise ValueError(f"Unknown reviewer type: {reviewer_type}. Available: {available}")
+        
+        print(f"🔄 Rewriting abstract for {reviewer_profile.name}...")
+        print(f"📝 Style: {reviewer_profile.style_description}")
+        
+        return self.gemini.rewrite_abstract(abstract, reviewer_profile, target_word_count)
+    
+    def batch_rewrite(self, abstract: str, reviewer_types: List[str], 
+                     target_word_count: int = None) -> Dict[str, RewriteResult]:
+        """Rewrite abstract for multiple reviewer types"""
+        
+        results = {}
+        for reviewer_type in reviewer_types:
+            try:
+                result = self.rewrite_for_reviewer(abstract, reviewer_type, target_word_count)
+                results[reviewer_type] = result
+                print(f"✅ Completed rewrite for {reviewer_type}")
+            except Exception as e:
+                print(f"❌ Failed to rewrite for {reviewer_type}: {e}")
+                results[reviewer_type] = None
+        
+        return results
+
+class ResultsDisplay:
+    """Display and export rewriting results"""
+    
+    @staticmethod
+    def print_result(result: RewriteResult):
+        """Print single rewrite result"""
+        
+        print(f"\n📄 REWRITE RESULT - {result.reviewer_style}")
+        print("=" * 80)
+        
+        print(f"📊 SUMMARY:")
+        print(f"   • Original Word Count: {result.word_count_original}")
+        print(f"   • Rewritten Word Count: {result.word_count_rewritten}")
+        print(f"   • Confidence Score: {result.confidence_score:.1%}")
+        
+        print(f"\n📝 ORIGINAL ABSTRACT:")
+        print("-" * 40)
+        print(result.original_abstract)
+        
+        print(f"\n✨ REWRITTEN ABSTRACT:")
+        print("-" * 40)
+        print(result.rewritten_abstract)
+        
+        print(f"\n🔧 KEY CHANGES MADE:")
+        print("-" * 40)
+        for i, change in enumerate(result.key_changes, 1):
+            print(f"{i}. {change}")
+        
+        print("\n" + "=" * 80)
+    
+    @staticmethod
+    def print_comparison(results: Dict[str, RewriteResult], original_abstract: str):
+        """Print comparison of multiple rewrites"""
+        
+        print(f"\n📄 ABSTRACT REWRITE COMPARISON")
+        print("=" * 100)
+        
+        print(f"📝 ORIGINAL ABSTRACT:")
+        print("-" * 50)
+        print(original_abstract)
+        print()
+        
+        for reviewer_type, result in results.items():
+            if result:
+                print(f"🎯 {result.reviewer_style.upper()}:")
+                print("-" * 50)
+                print(result.rewritten_abstract)
+                print(f"📊 Words: {result.word_count_rewritten} | Confidence: {result.confidence_score:.1%}")
+                print()
+        
+        print("=" * 100)
+    
+    @staticmethod
+    def save_results(results: Dict[str, RewriteResult], filename: str = None):
+        """Save results to JSON file"""
+        
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"abstract_rewrites_{timestamp}.json"
+        
+        data = {
+            'timestamp': datetime.now().isoformat(),
+            'results': {}
+        }
+        
+        for reviewer_type, result in results.items():
+            if result:
+                data['results'][reviewer_type] = {
+                    'reviewer_style': result.reviewer_style,
+                    'original_abstract': result.original_abstract,
+                    'rewritten_abstract': result.rewritten_abstract,
+                    'word_count_original': result.word_count_original,
+                    'word_count_rewritten': result.word_count_rewritten,
+                    'key_changes': result.key_changes,
+                    'confidence_score': result.confidence_score
+                }
+        
+        with open(filename, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        print(f"💾 Results saved to: {filename}")
+
+def interactive_mode():
+    """Interactive mode for abstract input"""
+    
+    print("📝 EXPLAIN LIKE I'M A REVIEWER")
+    print("=" * 50)
+    
+    # Show available reviewer types
+    db = ReviewerStyleDatabase()
+    descriptions = db.get_reviewer_descriptions()
+    
+    print("Available Reviewer Types:")
+    for key, desc in descriptions.items():
+        print(f"  • {key}: {desc}")
+    print()
+    
+    # Get input
+    abstract = input("Enter your abstract:\n").strip()
+    
+    print(f"\nChoose reviewer type(s) - enter one or comma-separated list:")
+    reviewer_input = input("Reviewer type(s): ").strip()
+    reviewer_types = [r.strip() for r in reviewer_input.split(',')]
+    
+    word_count = input("Target word count (optional): ").strip()
+    target_word_count = int(word_count) if word_count.isdigit() else None
+    
+    api_key = input("Gemini API Key (get free key from https://makersuite.google.com/app/apikey): ").strip()
+    
+    return abstract, reviewer_types, target_word_count, api_key
+
+def main():
+    """Main application entry point"""
+    
+    parser = argparse.ArgumentParser(description='Abstract Rewriter for Different Reviewer Styles')
+    parser.add_argument('--abstract', help='Abstract text to rewrite')
+    parser.add_argument('--reviewer', action='append', help='Reviewer type (can be used multiple times)')
+    parser.add_argument('--word-count', type=int, help='Target word count')
+    parser.add_argument('--api-key', help='Gemini API key')
+    parser.add_argument('--save', help='Save results to file')
+    parser.add_argument('--interactive', action='store_true', help='Run in interactive mode')
+    parser.add_argument('--list-reviewers', action='store_true', help='List available reviewer types')
+    
+    args = parser.parse_args()
+    
+    try:
+        # List reviewers if requested
+        if args.list_reviewers:
+            db = ReviewerStyleDatabase()
+            descriptions = db.get_reviewer_descriptions()
+            print("Available Reviewer Types:")
+            for key, desc in descriptions.items():
+                print(f"  • {key}: {desc}")
+            return
+        
+        # Get input parameters
+        if args.interactive or not args.abstract:
+            abstract, reviewer_types, target_word_count, api_key = interactive_mode()
+        else:
+            abstract = args.abstract
+            reviewer_types = args.reviewer or ['nature_reviewer']
+            target_word_count = args.word_count
+            api_key = args.api_key or os.getenv('GEMINI_API_KEY')
+        
+        if not api_key:
+            print("❌ Error: Gemini API key required. Get free key from https://makersuite.google.com/app/apikey")
+            sys.exit(1)
+        
+        # Initialize rewriter
+        rewriter = AbstractRewriter(api_key)
+        
+        # Perform rewrites
+        if len(reviewer_types) == 1:
+            result = rewriter.rewrite_for_reviewer(abstract, reviewer_types[0], target_word_count)
+            ResultsDisplay.print_result(result)
+            
+            if args.save:
+                results = {reviewer_types[0]: result}
+                ResultsDisplay.save_results(results, args.save)
+        else:
+            results = rewriter.batch_rewrite(abstract, reviewer_types, target_word_count)
+            ResultsDisplay.print_comparison(results, abstract)
+            
+            if args.save:
+                ResultsDisplay.save_results(results, args.save)
+        
+    except KeyboardInterrupt:
+        print("\n\nOperation cancelled.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
